@@ -39,6 +39,138 @@ export type Database = {
   }
   public: {
     Tables: {
+      evaluations: {
+        Row: {
+          id: string
+          owner: string
+          status: string
+          client_name: string | null
+          client_dob: string | null
+          client_age_years: number | null
+          client_age_months: number | null
+          client_gender: string | null
+          client_grade: string | null
+          client_school: string | null
+          examiner_name: string | null
+          examiner_title: string | null
+          test_date: string | null
+          listening_comprehension: Json | null
+          oral_expression: Json | null
+          reading_comprehension: Json | null
+          written_expression: Json | null
+          composite_scores: Json | null
+          notes: string | null
+          recommendations: string | null
+          form_data: Json | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          owner: string
+          status?: string
+          client_name?: string | null
+          client_dob?: string | null
+          client_age_years?: number | null
+          client_age_months?: number | null
+          client_gender?: string | null
+          client_grade?: string | null
+          client_school?: string | null
+          examiner_name?: string | null
+          examiner_title?: string | null
+          test_date?: string | null
+          listening_comprehension?: Json | null
+          oral_expression?: Json | null
+          reading_comprehension?: Json | null
+          written_expression?: Json | null
+          composite_scores?: Json | null
+          notes?: string | null
+          recommendations?: string | null
+          form_data?: Json | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          owner?: string
+          status?: string
+          client_name?: string | null
+          client_dob?: string | null
+          client_age_years?: number | null
+          client_age_months?: number | null
+          client_gender?: string | null
+          client_grade?: string | null
+          client_school?: string | null
+          examiner_name?: string | null
+          examiner_title?: string | null
+          test_date?: string | null
+          listening_comprehension?: Json | null
+          oral_expression?: Json | null
+          reading_comprehension?: Json | null
+          written_expression?: Json | null
+          composite_scores?: Json | null
+          notes?: string | null
+          recommendations?: string | null
+          form_data?: Json | null
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      transcripts: {
+        Row: {
+          id: string
+          evaluation_id: string
+          content: string
+          source: string
+          original_filename: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          evaluation_id: string
+          content: string
+          source?: string
+          original_filename?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          evaluation_id?: string
+          content?: string
+          source?: string
+          original_filename?: string | null
+          created_at?: string
+        }
+        Relationships: []
+      }
+      chat_messages: {
+        Row: {
+          id: string
+          evaluation_id: string
+          role: string
+          content: string
+          extracted_data: Json | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          evaluation_id: string
+          role: string
+          content: string
+          extracted_data?: Json | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          evaluation_id?: string
+          role?: string
+          content?: string
+          extracted_data?: Json | null
+          created_at?: string
+        }
+        Relationships: []
+      }
       todo_list: {
         Row: {
           created_at: string

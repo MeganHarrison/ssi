@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument } from 'pdf-lib';
 import { createSSRSassClient } from '@/lib/supabase/server';
 import OpenAI from 'openai';
+import { resolveEvaluationFormData, storedEvaluationFormData } from '@/lib/evaluation-form-data.mjs';
+import { getVerifiedSupabaseUser } from '@/lib/supabase/verified-user.mjs';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -76,8 +78,45 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Messages required' }, { status: 400 });
     }
 
-    // Extract form data from conversation
-    const formData = await extractFormData(messages);
+    const client = await createSSRSassClient();
+    const supabase = client.getSupabaseClient();
+    if (!await getVerifiedSupabaseUser(supabase)) {
+      return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
+    let savedFormData: Record<string, unknown> | null = null;
+    if (evaluationId) {
+      const { data, error } = await supabase
+        .from('evaluations')
+        .select('id, form_data, client_name, client_dob, client_age_years, client_age_months, client_gender, client_grade, client_school, examiner_name, examiner_title, test_date, listening_comprehension, oral_expression, reading_comprehension, written_expression, composite_scores, notes, recommendations')
+        .eq('id', evaluationId)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Error loading evaluation for PDF generation:', error);
+        return NextResponse.json({ error: 'Could not load evaluation data' }, { status: 500 });
+      }
+      if (!data) {
+        return NextResponse.json({ error: 'Evaluation not found' }, { status: 404 });
+      }
+      savedFormData = storedEvaluationFormData(data as unknown as Record<string, unknown>);
+    }
+
+    // Do not let an empty AI extraction erase a saved evaluation when the user
+    // downloads its PDF without adding any new chat messages.
+    const extractedFormData = await extractFormData(messages);
+    const resolved = resolveEvaluationFormData(savedFormData, extractedFormData);
+    if (!resolved.formData) {
+      return NextResponse.json({ error: 'No evaluation data is available to generate a PDF' }, { status: 422 });
+    }
+    const formData = resolved.formData as unknown as {
+      client?: { name?: string; dateOfBirth?: string; ageYears?: number; ageMonths?: number; gender?: string; grade?: string; school?: string };
+      examiner?: { name?: string; title?: string };
+      testDate?: string;
+      scores?: Record<string, { standardScore?: number; percentileRank?: number } | undefined>;
+      notes?: string;
+      recommendations?: string;
+    };
 
     // Try to load the OWLS II PDF template
     // For now, we'll create a simple PDF with the extracted data
@@ -277,12 +316,9 @@ export async function POST(req: NextRequest) {
     }
 
     // Save the evaluation data to database
-    if (evaluationId) {
+    if (evaluationId && resolved.shouldPersist) {
       try {
-        const client = await createSSRSassClient();
-        const supabase = client.getSupabaseClient();
-
-        await supabase
+        const { error } = await supabase
           .from('evaluations')
           .update({
             client_name: formData.client?.name,
@@ -294,8 +330,13 @@ export async function POST(req: NextRequest) {
             updated_at: new Date().toISOString(),
           })
           .eq('id', evaluationId);
+        if (error) {
+          console.error('Error saving evaluation:', error);
+          return NextResponse.json({ error: 'Could not save extracted evaluation data' }, { status: 500 });
+        }
       } catch (error) {
         console.error('Error saving evaluation:', error);
+        return NextResponse.json({ error: 'Could not save extracted evaluation data' }, { status: 500 });
       }
     }
 

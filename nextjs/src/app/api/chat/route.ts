@@ -1,11 +1,18 @@
 import { openai } from '@ai-sdk/openai';
 import { streamText } from 'ai';
 import { SYSTEM_PROMPT } from '@/lib/ai/prompts';
+import { createSSRClient } from '@/lib/supabase/server';
+import { getVerifiedSupabaseUser } from '@/lib/supabase/verified-user.mjs';
 
 export const runtime = 'edge';
 
 export async function POST(req: Request) {
   try {
+    const supabase = await createSSRClient();
+    if (!await getVerifiedSupabaseUser(supabase)) {
+      return Response.json({ error: 'Authentication required' }, { status: 401 });
+    }
+
     const { messages } = await req.json();
 
     // Validate messages

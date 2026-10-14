@@ -6,12 +6,11 @@ import { resolveEvaluationFormData, storedEvaluationFormData } from '@/lib/evalu
 import { formatScaleScore, scoreTemplateFields } from '@/lib/score-export.mjs';
 import { getVerifiedSupabaseUser } from '@/lib/supabase/verified-user.mjs';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 // Extract structured data from chat messages using AI
 async function extractFormData(messages: { role: string; content: string }[]) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is not configured for PDF extraction');
+  const openai = new OpenAI({ apiKey });
   const conversationText = messages
     .map(m => `${m.role}: ${m.content}`)
     .join('\n\n');
@@ -77,6 +76,12 @@ export async function POST(req: NextRequest) {
 
     if (!messages || !Array.isArray(messages)) {
       return NextResponse.json({ error: 'Messages required' }, { status: 400 });
+    }
+    if (!process.env.OPENAI_API_KEY) {
+      return NextResponse.json(
+        { error: 'PDF extraction is unavailable because OPENAI_API_KEY is not configured on this deployment.' },
+        { status: 503 }
+      );
     }
 
     const client = await createSSRSassClient();

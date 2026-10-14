@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Plus, FileText, Clock, CheckCircle, AlertCircle } from 'lucide-react';
 import { createSPASassClient } from '@/lib/supabase/client';
+import { formatEvaluationDate } from '@/lib/evaluation-form-data.mjs';
 
 interface Evaluation {
   id: string;
@@ -70,7 +71,7 @@ export default function EvaluationsPage() {
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
+    return formatEvaluationDate(dateString, 'en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',

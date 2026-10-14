@@ -3,6 +3,7 @@ import { PDFDocument } from 'pdf-lib';
 import { createSSRSassClient } from '@/lib/supabase/server';
 import OpenAI from 'openai';
 import { resolveEvaluationFormData, storedEvaluationFormData } from '@/lib/evaluation-form-data.mjs';
+import { formatScaleScore, scoreTemplateFields } from '@/lib/score-export.mjs';
 import { getVerifiedSupabaseUser } from '@/lib/supabase/verified-user.mjs';
 
 const openai = new OpenAI({
@@ -201,11 +202,9 @@ export async function POST(req: NextRequest) {
         page.drawText('Scores', { x: 50, y: yPosition, size: 14 });
         yPosition -= lineHeight;
 
-        const addScores = (label: string, scores: { standardScore?: number; percentileRank?: number } | undefined) => {
-          if (scores?.standardScore || scores?.percentileRank) {
-            let scoreText = `${label}: `;
-            if (scores.standardScore) scoreText += `SS=${scores.standardScore}`;
-            if (scores.percentileRank) scoreText += ` PR=${scores.percentileRank}`;
+        const addScores = (label: string, scores: { rawScore?: number; standardScore?: number; percentileRank?: number } | undefined) => {
+          const scoreText = formatScaleScore(label, scores);
+          if (scoreText) {
             page.drawText(scoreText, { x: 50, y: yPosition, size: 12 });
             yPosition -= lineHeight;
           }
@@ -298,15 +297,10 @@ export async function POST(req: NextRequest) {
         setField('ExaminerTitle', formData.examiner?.title);
         setField('TestDate', formData.testDate);
 
-        // Score fields
-        setField('LC_StandardScore', formData.scores?.listeningComprehension?.standardScore);
-        setField('LC_Percentile', formData.scores?.listeningComprehension?.percentileRank);
-        setField('OE_StandardScore', formData.scores?.oralExpression?.standardScore);
-        setField('OE_Percentile', formData.scores?.oralExpression?.percentileRank);
-        setField('RC_StandardScore', formData.scores?.readingComprehension?.standardScore);
-        setField('RC_Percentile', formData.scores?.readingComprehension?.percentileRank);
-        setField('WE_StandardScore', formData.scores?.writtenExpression?.standardScore);
-        setField('WE_Percentile', formData.scores?.writtenExpression?.percentileRank);
+        // Score fields; zero is a valid raw score and must not be dropped.
+        for (const [field, score] of Object.entries(scoreTemplateFields(formData.scores))) {
+          setField(field, score);
+        }
 
         setField('Notes', formData.notes);
         setField('Recommendations', formData.recommendations);

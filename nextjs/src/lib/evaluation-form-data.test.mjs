@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   hasMeaningfulFormData,
+  formatEvaluationDate,
+  mergeManualEvaluationEdits,
   mergeEvaluationFormData,
   resolveEvaluationFormData,
   storedEvaluationFormData,
@@ -103,4 +105,30 @@ test('partially populated form_data keeps saved detail-column values too', () =>
     notes: undefined,
     recommendations: undefined,
   });
+});
+
+test('manual corrections update nested PDF data and preserve unrelated fields', () => {
+  assert.deepEqual(mergeManualEvaluationEdits({
+    client: { name: 'Old name', dateOfBirth: '2010-01-02', school: 'Lincoln' },
+    examiner: { name: 'Old examiner', title: 'CCC-SLP' },
+    testDate: '2026-01-01',
+    notes: 'Reviewed',
+  }, {
+    client_name: 'Corrected name',
+    client_dob: '2010-01-03',
+    examiner_name: '',
+    test_date: '2026-02-02',
+  }), {
+    client: { name: 'Corrected name', dateOfBirth: '2010-01-03', school: 'Lincoln' },
+    examiner: { name: null, title: 'CCC-SLP' },
+    testDate: '2026-02-02',
+    notes: 'Reviewed',
+  });
+});
+
+test('date-only values keep their calendar day in negative UTC offsets', () => {
+  assert.equal(formatEvaluationDate('2026-01-15', 'en-US', {
+    timeZone: 'America/Los_Angeles', year: 'numeric', month: 'long', day: 'numeric',
+  }), 'January 15, 2026');
+  assert.equal(formatEvaluationDate(null), 'Not set');
 });

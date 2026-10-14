@@ -87,12 +87,16 @@ export function createFieldMapping(pdfFields: PDFFieldInfo[]): Record<string, st
     'examiner.name': [/examiner/i, /evaluator/i, /clinician/i],
     'test.testDate': [/test.*date/i, /exam.*date/i, /date.*test/i, /date.*exam/i],
     'scores.listeningComprehension.standardScore': [/lc.*standard/i, /listen.*standard/i],
+    'scores.listeningComprehension.rawScore': [/lc.*raw/i, /listen.*raw/i],
     'scores.listeningComprehension.percentileRank': [/lc.*percent/i, /listen.*percent/i],
     'scores.oralExpression.standardScore': [/oe.*standard/i, /oral.*express.*standard/i],
+    'scores.oralExpression.rawScore': [/oe.*raw/i, /oral.*express.*raw/i],
     'scores.oralExpression.percentileRank': [/oe.*percent/i, /oral.*express.*percent/i],
     'scores.readingComprehension.standardScore': [/rc.*standard/i, /read.*standard/i],
+    'scores.readingComprehension.rawScore': [/rc.*raw/i, /read.*raw/i],
     'scores.readingComprehension.percentileRank': [/rc.*percent/i, /read.*percent/i],
     'scores.writtenExpression.standardScore': [/we.*standard/i, /writ.*standard/i],
+    'scores.writtenExpression.rawScore': [/we.*raw/i, /writ.*raw/i],
     'scores.writtenExpression.percentileRank': [/we.*percent/i, /writ.*percent/i],
   };
 

@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import { createSPASassClient } from '@/lib/supabase/client';
 import { INITIAL_GREETING } from '@/lib/ai/prompts';
+import { formatEvaluationDate, mergeManualEvaluationEdits } from '@/lib/evaluation-form-data.mjs';
+import type { Json } from '@/lib/types';
 
 interface Evaluation {
   id: string;
@@ -50,6 +52,7 @@ export default function EvaluationDetailPage() {
   ]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -70,7 +73,19 @@ export default function EvaluationDetailPage() {
           return;
         }
 
+        const { data: chatRows, error: chatError } = await supabase
+          .from('chat_messages')
+          .select('id, role, content')
+          .eq('evaluation_id', evaluationId)
+          .order('created_at', { ascending: true });
+        if (chatError) throw new Error(`Could not load saved conversation: ${chatError.message}`);
+
         setEvaluation(data);
+        setMessages([
+          { id: 'greeting', role: 'assistant', content: INITIAL_GREETING },
+          ...(chatRows ?? []).map((row) => ({ id: row.id, role: row.role as Message['role'], content: row.content })),
+        ]);
+        setShowChat(data.status === 'in_progress' || (chatRows?.length ?? 0) > 0);
         setEditedData({
           client_name: data.client_name || '',
           client_dob: data.client_dob || '',
@@ -79,6 +94,7 @@ export default function EvaluationDetailPage() {
         });
       } catch (error) {
         console.error('Error:', error);
+        setChatError(error instanceof Error ? error.message : 'Could not load this evaluation.');
       } finally {
         setLoading(false);
       }
@@ -93,17 +109,17 @@ export default function EvaluationDetailPage() {
 
   // Send message to AI
   const sendMessage = async (content: string) => {
-    if (!content.trim()) return;
+    if (!content.trim() || !evaluationId) return;
 
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: 'user',
       content,
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setInput('');
     setIsLoading(true);
+    setChatError(null);
 
     try {
       const response = await fetch('/api/chat', {
@@ -114,18 +130,24 @@ export default function EvaluationDetailPage() {
             role: m.role,
             content: m.content,
           })),
+          evaluationId,
+          messageId: userMessage.id,
         }),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to get response');
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `Chat request failed (${response.status})`);
       }
+
+      setInput('');
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let assistantMessage = '';
 
-      const assistantId = (Date.now() + 1).toString();
+      const assistantId = response.headers.get('X-Assistant-Message-Id');
+      if (!assistantId) throw new Error('The assistant response was not saved. Your message is preserved; retry to continue.');
       setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '' }]);
 
       while (reader) {
@@ -141,16 +163,14 @@ export default function EvaluationDetailPage() {
           )
         );
       }
+      const client = await createSPASassClient();
+      const supabase = client.getSupabaseClient();
+      const { data: savedAssistant, error: savedAssistantError } = await supabase
+        .from('chat_messages').select('id').eq('id', assistantId).eq('evaluation_id', evaluationId).maybeSingle();
+      if (savedAssistantError || !savedAssistant) throw new Error('The assistant response could not be confirmed as saved. Refresh before continuing.');
     } catch (error) {
       console.error('Error sending message:', error);
-      setMessages(prev => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: 'Sorry, there was an error. Please try again.',
-        },
-      ]);
+      setChatError(error instanceof Error ? error.message : 'Could not save or send this message.');
     } finally {
       setIsLoading(false);
     }
@@ -167,6 +187,7 @@ export default function EvaluationDetailPage() {
     try {
       const client = await createSPASassClient();
       const supabase = client.getSupabaseClient();
+      const formData = mergeManualEvaluationEdits(evaluation.form_data, editedData);
 
       const { error } = await supabase
         .from('evaluations')
@@ -175,6 +196,7 @@ export default function EvaluationDetailPage() {
           client_dob: editedData.client_dob || null,
           examiner_name: editedData.examiner_name || null,
           test_date: editedData.test_date || null,
+          form_data: formData as unknown as Json,
           updated_at: new Date().toISOString(),
         })
         .eq('id', evaluationId);
@@ -188,6 +210,7 @@ export default function EvaluationDetailPage() {
       setEvaluation({
         ...evaluation,
         ...editedData,
+        form_data: formData,
         updated_at: new Date().toISOString(),
       });
       setIsEditing(false);
@@ -230,8 +253,7 @@ export default function EvaluationDetailPage() {
   };
 
   const formatDate = (dateString: string | null) => {
-    if (!dateString) return 'Not set';
-    return new Date(dateString).toLocaleDateString('en-US', {
+    return formatEvaluationDate(dateString, 'en-US', {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
@@ -249,7 +271,9 @@ export default function EvaluationDetailPage() {
   if (!evaluation) {
     return (
       <div className="text-center py-12">
-        <p className="text-gray-600">Evaluation not found</p>
+        <p role={chatError ? 'alert' : undefined} className={chatError ? 'text-red-700' : 'text-gray-600'}>
+          {chatError || 'Evaluation not found'}
+        </p>
       </div>
     );
   }
@@ -427,6 +451,7 @@ export default function EvaluationDetailPage() {
           </div>
 
           <div className="h-80 overflow-y-auto p-4 space-y-4">
+            {chatError && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{chatError}</p>}
             {messages.map((message) => (
               <div
                 key={message.id}

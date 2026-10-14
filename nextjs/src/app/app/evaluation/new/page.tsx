@@ -27,7 +27,10 @@ export default function NewEvaluationPage() {
   const router = useRouter();
   const [currentStep, setCurrentStep] = useState<Step>('input');
   const [transcript, setTranscript] = useState('');
+  const [transcriptSource, setTranscriptSource] = useState<'upload' | 'paste'>('paste');
   const [evaluationId, setEvaluationId] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [isRestoring, setIsRestoring] = useState(false);
   const [evaluationData] = useState<OWLSIIEvaluation>(createEmptyEvaluation());
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
@@ -42,6 +45,43 @@ export default function NewEvaluationPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('evaluationId');
+    if (!id) return;
+
+    let cancelled = false;
+    setIsRestoring(true);
+    (async () => {
+      try {
+        const client = await createSPASassClient();
+        const supabase = client.getSupabaseClient();
+        const [{ data: evaluation, error: evaluationError }, { data: transcriptRows, error: transcriptError }, { data: chatRows, error: chatError }] = await Promise.all([
+          supabase.from('evaluations').select('id').eq('id', id).single(),
+          supabase.from('transcripts').select('content').eq('evaluation_id', id).order('created_at', { ascending: true }).limit(1),
+          supabase.from('chat_messages').select('id, role, content').eq('evaluation_id', id).order('created_at', { ascending: true }),
+        ]);
+        if (evaluationError) throw new Error(`Evaluation could not be restored: ${evaluationError.message}`);
+        if (transcriptError) throw new Error(`Transcript could not be restored: ${transcriptError.message}`);
+        if (chatError) throw new Error(`Conversation could not be restored: ${chatError.message}`);
+        if (!evaluation) throw new Error('Evaluation could not be restored. It may have been deleted or access was removed.');
+        if (cancelled) return;
+        setEvaluationId(id);
+        setTranscript(transcriptRows?.[0]?.content ?? '');
+        setMessages([
+          { id: 'greeting', role: 'assistant', content: INITIAL_GREETING },
+          ...(chatRows ?? []).map((row) => ({ id: row.id, role: row.role as Message['role'], content: row.content })),
+        ]);
+        setCurrentStep('chat');
+      } catch (error) {
+        if (!cancelled) setChatError(error instanceof Error ? error.message : 'Could not restore this evaluation.');
+      } finally {
+        if (!cancelled) setIsRestoring(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, []);
 
   // Create evaluation in database
   const createEvaluation = async () => {
@@ -85,23 +125,24 @@ export default function NewEvaluationPage() {
     reader.onload = (e) => {
       const text = e.target?.result as string;
       setTranscript(text);
+      setTranscriptSource('upload');
     };
     reader.readAsText(file);
   };
 
   // Send message to AI
-  const sendMessage = async (content: string) => {
-    if (!content.trim()) return;
+  const sendMessage = async (content: string, targetEvaluationId = evaluationId) => {
+    if (!content.trim() || !targetEvaluationId) return;
 
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: crypto.randomUUID(),
       role: 'user',
       content,
     };
 
     setMessages(prev => [...prev, userMessage]);
-    setInput('');
     setIsLoading(true);
+    setChatError(null);
 
     try {
       const response = await fetch('/api/chat', {
@@ -112,18 +153,24 @@ export default function NewEvaluationPage() {
             role: m.role,
             content: m.content,
           })),
+          evaluationId: targetEvaluationId,
+          messageId: userMessage.id,
         }),
       });
 
       if (!response.ok) {
-        throw new Error('Failed to get response');
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `Chat request failed (${response.status})`);
       }
+
+      setInput('');
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let assistantMessage = '';
 
-      const assistantId = (Date.now() + 1).toString();
+      const assistantId = response.headers.get('X-Assistant-Message-Id');
+      if (!assistantId) throw new Error('The assistant response was not saved. Your message is preserved; retry to continue.');
       setMessages(prev => [...prev, { id: assistantId, role: 'assistant', content: '' }]);
 
       while (reader) {
@@ -139,16 +186,14 @@ export default function NewEvaluationPage() {
           )
         );
       }
+      const client = await createSPASassClient();
+      const supabase = client.getSupabaseClient();
+      const { data: savedAssistant, error: savedAssistantError } = await supabase
+        .from('chat_messages').select('id').eq('id', assistantId).eq('evaluation_id', targetEvaluationId).maybeSingle();
+      if (savedAssistantError || !savedAssistant) throw new Error('The assistant response could not be confirmed as saved. Refresh before continuing.');
     } catch (error) {
       console.error('Error sending message:', error);
-      setMessages(prev => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: 'Sorry, there was an error. Please try again.',
-        },
-      ]);
+      setChatError(error instanceof Error ? error.message : 'Could not save or send this message.');
     } finally {
       setIsLoading(false);
     }
@@ -159,15 +204,31 @@ export default function NewEvaluationPage() {
     if (!transcript.trim()) return;
 
     // Create evaluation in database
+    setChatError(null);
     const id = await createEvaluation();
-    if (id) {
-      setEvaluationId(id);
+    if (!id) {
+      setChatError('Could not create the evaluation. Your transcript is still here; retry.');
+      return;
+    }
+    setEvaluationId(id);
+
+    const client = await createSPASassClient();
+    const supabase = client.getSupabaseClient();
+    const { error } = await supabase.from('transcripts').insert({ evaluation_id: id, content: transcript, source: transcriptSource });
+    if (error) {
+      const { error: deleteError } = await supabase.from('evaluations').delete().eq('id', id);
+      setEvaluationId(null);
+      setChatError(deleteError
+        ? `Transcript could not be saved (${error.message}); evaluation ${id} also could not be removed (${deleteError.message}). Your transcript remains on this page.`
+        : `Transcript could not be saved (${error.message}). The empty evaluation was removed; your transcript remains on this page.`);
+      return;
     }
 
+    window.history.replaceState(null, '', `/app/evaluation/new?evaluationId=${encodeURIComponent(id)}`);
     setCurrentStep('chat');
 
     // Send transcript as first message
-    await sendMessage(`Here is my evaluation transcript:\n\n${transcript}`);
+    await sendMessage(`Here is my evaluation transcript:\n\n${transcript}`, id);
   };
 
   // Handle chat form submit
@@ -221,6 +282,8 @@ export default function NewEvaluationPage() {
 
   return (
     <div className="max-w-4xl mx-auto">
+      {isRestoring && <p role="status" className="mb-4 text-sm text-gray-600">Restoring saved evaluation…</p>}
+      {chatError && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-800">{chatError}</p>}
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <button
@@ -311,7 +374,7 @@ export default function NewEvaluationPage() {
             {/* Submit Button */}
             <button
               onClick={handleTranscriptSubmit}
-              disabled={!transcript.trim()}
+              disabled={!transcript.trim() || isLoading}
               className="w-full py-3 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
             >
               Continue to Chat

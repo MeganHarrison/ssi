@@ -19,3 +19,22 @@ test('maps raw, standard, and percentile scores to template field names', () => 
     OE_RawScore: 14,
   });
 });
+
+test('maps all composite scores into template fields, including zero percentiles', () => {
+  assert.deepEqual(scoreTemplateFields({}, {
+    oralLanguage: { standardScore: 111, percentileRank: 77 },
+    writtenLanguage: { standardScore: 0, percentileRank: 0 },
+    receptiveLanguage: { standardScore: 101 },
+    expressiveLanguage: { percentileRank: 45 },
+    overallLanguage: { standardScore: 99, percentileRank: 47 },
+  }), {
+    OL_StandardScore: 111,
+    OL_Percentile: 77,
+    WL_StandardScore: 0,
+    WL_Percentile: 0,
+    RL_StandardScore: 101,
+    EL_Percentile: 45,
+    Overall_StandardScore: 99,
+    Overall_Percentile: 47,
+  });
+});

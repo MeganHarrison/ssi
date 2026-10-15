@@ -45,13 +45,36 @@ export function mergeEvaluationFormData(saved, extracted) {
 export function resolveEvaluationFormData(saved, extracted) {
   const hasNewData = hasMeaningfulFormData(extracted);
   const formData = hasNewData
-    ? mergeEvaluationFormData(saved, extracted)
+    ? mergeExtractionPreservingManualOverrides(saved, extracted)
     : isRecord(saved) ? saved : null;
 
   return {
     formData: formData && hasMeaningfulFormData(formData) ? formData : null,
     shouldPersist: hasNewData,
   };
+}
+
+const MANUAL_OVERRIDE_PATHS = ['client.name', 'client.dateOfBirth', 'examiner.name', 'testDate'];
+
+function mergeExtractionPreservingManualOverrides(saved, extracted) {
+  const merged = mergeEvaluationFormData(saved, extracted);
+  if (!isRecord(saved) || !Array.isArray(saved.manualOverrides)) return merged;
+
+  for (const path of saved.manualOverrides) {
+    if (!MANUAL_OVERRIDE_PATHS.includes(path)) continue;
+    const keys = path.split('.');
+    let source = saved;
+    let target = merged;
+    for (const key of keys.slice(0, -1)) {
+      if (!isRecord(source[key])) break;
+      source = source[key];
+      if (!isRecord(target[key])) target[key] = {};
+      target = target[key];
+    }
+    const lastKey = keys.at(-1);
+    if (Object.hasOwn(source, lastKey)) target[lastKey] = source[lastKey];
+  }
+  return merged;
 }
 
 /**
@@ -76,8 +99,8 @@ export function storedEvaluationFormData(row) {
       oralExpression: row.oral_expression,
       readingComprehension: row.reading_comprehension,
       writtenExpression: row.written_expression,
-      composite: row.composite_scores,
     },
+    composites: row.composite_scores,
     notes: row.notes,
     recommendations: row.recommendations,
   };
@@ -101,6 +124,10 @@ export function mergeManualEvaluationEdits(saved, edits) {
   const valueOrNull = (value) => typeof value === 'string' && value.trim() === '' ? null : value ?? null;
   return {
     ...form,
+    manualOverrides: [...new Set([
+      ...(Array.isArray(form.manualOverrides) ? form.manualOverrides : []),
+      ...MANUAL_OVERRIDE_PATHS,
+    ])],
     client: {
       ...(isRecord(form.client) ? form.client : {}),
       name: valueOrNull(edits.client_name),

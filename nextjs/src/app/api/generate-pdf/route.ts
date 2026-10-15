@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument } from 'pdf-lib';
+import { drawUnicodeText, embedUnicodeFonts, UnsupportedPdfCharacterError } from '@/lib/pdf/unicode-fonts.mjs';
 import { createSSRSassClient } from '@/lib/supabase/server';
 import OpenAI from 'openai';
 import { resolveEvaluationFormData, storedEvaluationFormData } from '@/lib/evaluation-form-data.mjs';
@@ -54,6 +55,13 @@ Return ONLY a valid JSON object with this structure:
     "oralExpression": { same structure },
     "readingComprehension": { same structure },
     "writtenExpression": { same structure }
+  },
+  "composites": {
+    "oralLanguage": { "standardScore": number or null, "percentileRank": number or null },
+    "writtenLanguage": { "standardScore": number or null, "percentileRank": number or null },
+    "receptiveLanguage": { "standardScore": number or null, "percentileRank": number or null },
+    "expressiveLanguage": { "standardScore": number or null, "percentileRank": number or null },
+    "overallLanguage": { "standardScore": number or null, "percentileRank": number or null }
   },
   "notes": "string or null",
   "recommendations": "string or null"
@@ -139,6 +147,7 @@ export async function POST(req: NextRequest) {
       examiner?: { name?: string; title?: string };
       testDate?: string;
       scores?: Record<string, { standardScore?: number; percentileRank?: number } | undefined>;
+      composites?: Record<string, { standardScore?: number; percentileRank?: number } | undefined>;
       notes?: string;
       recommendations?: string;
     };
@@ -169,6 +178,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (!usedTemplate) {
+      const unicodeFonts = await embedUnicodeFonts(pdfDoc);
       // Create a simple report PDF with extracted data
       const page = pdfDoc.addPage([612, 792]); // Letter size
       const { height } = page.getSize();
@@ -187,11 +197,7 @@ export async function POST(req: NextRequest) {
       // Helper function to add a line
       const addLine = (label: string, value: string | number | null | undefined) => {
         if (value !== null && value !== undefined) {
-          page.drawText(`${label}: ${value}`, {
-            x: 50,
-            y: yPosition,
-            size: 12,
-          });
+          drawUnicodeText(page, `${label}: ${value}`, { x: 50, y: yPosition, size: 12 }, unicodeFonts);
           yPosition -= lineHeight;
         }
       };
@@ -229,7 +235,7 @@ export async function POST(req: NextRequest) {
         const addScores = (label: string, scores: { rawScore?: number; standardScore?: number; percentileRank?: number } | undefined) => {
           const scoreText = formatScaleScore(label, scores);
           if (scoreText) {
-            page.drawText(scoreText, { x: 50, y: yPosition, size: 12 });
+            drawUnicodeText(page, scoreText, { x: 50, y: yPosition, size: 12 }, unicodeFonts);
             yPosition -= lineHeight;
           }
         };
@@ -238,6 +244,25 @@ export async function POST(req: NextRequest) {
         addScores('Oral Expression', formData.scores.oralExpression);
         addScores('Reading Comprehension', formData.scores.readingComprehension);
         addScores('Written Expression', formData.scores.writtenExpression);
+      }
+
+      if (formData.composites) {
+        page.drawText('Composite Scores', { x: 50, y: yPosition, size: 14 });
+        yPosition -= lineHeight;
+
+        const addComposite = (label: string, scores: { standardScore?: number; percentileRank?: number } | undefined) => {
+          const scoreText = formatScaleScore(label, scores);
+          if (scoreText) {
+            drawUnicodeText(page, scoreText, { x: 50, y: yPosition, size: 12 }, unicodeFonts);
+            yPosition -= lineHeight;
+          }
+        };
+
+        addComposite('Oral Language Composite', formData.composites.oralLanguage);
+        addComposite('Written Language Composite', formData.composites.writtenLanguage);
+        addComposite('Receptive Language Composite', formData.composites.receptiveLanguage);
+        addComposite('Expressive Language Composite', formData.composites.expressiveLanguage);
+        addComposite('Overall Language Composite', formData.composites.overallLanguage);
       }
 
       yPosition -= lineHeight;
@@ -252,7 +277,7 @@ export async function POST(req: NextRequest) {
         let line = '';
         for (const word of words) {
           if (line.length + word.length > 80) {
-            page.drawText(line, { x: 50, y: yPosition, size: 10 });
+            drawUnicodeText(page, line, { x: 50, y: yPosition, size: 10 }, unicodeFonts);
             yPosition -= lineHeight * 0.8;
             line = word + ' ';
           } else {
@@ -260,7 +285,7 @@ export async function POST(req: NextRequest) {
           }
         }
         if (line) {
-          page.drawText(line, { x: 50, y: yPosition, size: 10 });
+          drawUnicodeText(page, line, { x: 50, y: yPosition, size: 10 }, unicodeFonts);
           yPosition -= lineHeight;
         }
       }
@@ -275,7 +300,7 @@ export async function POST(req: NextRequest) {
         let line = '';
         for (const word of words) {
           if (line.length + word.length > 80) {
-            page.drawText(line, { x: 50, y: yPosition, size: 10 });
+            drawUnicodeText(page, line, { x: 50, y: yPosition, size: 10 }, unicodeFonts);
             yPosition -= lineHeight * 0.8;
             line = word + ' ';
           } else {
@@ -283,7 +308,7 @@ export async function POST(req: NextRequest) {
           }
         }
         if (line) {
-          page.drawText(line, { x: 50, y: yPosition, size: 10 });
+          drawUnicodeText(page, line, { x: 50, y: yPosition, size: 10 }, unicodeFonts);
         }
       }
 
@@ -322,7 +347,7 @@ export async function POST(req: NextRequest) {
         setField('TestDate', formData.testDate);
 
         // Score fields; zero is a valid raw score and must not be dropped.
-        for (const [field, score] of Object.entries(scoreTemplateFields(formData.scores))) {
+        for (const [field, score] of Object.entries(scoreTemplateFields(formData.scores, formData.composites))) {
           setField(field, score);
         }
 
@@ -371,6 +396,9 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error('PDF generation error:', error);
+    if (error instanceof UnsupportedPdfCharacterError) {
+      return NextResponse.json({ error: error.message }, { status: 422 });
+    }
     return NextResponse.json(
       { error: 'Failed to generate PDF' },
       { status: 500 }

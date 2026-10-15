@@ -14,6 +14,7 @@ import {
 import { createSPASassClient } from '@/lib/supabase/client';
 import { INITIAL_GREETING } from '@/lib/ai/prompts';
 import { OWLSIIEvaluation, createEmptyEvaluation } from '@/lib/schema/owls-ii';
+import { buildInitialTranscriptMessage, getInitialTranscriptError } from '@/lib/evaluation-chat.mjs';
 
 type Step = 'input' | 'chat' | 'review' | 'download';
 
@@ -198,7 +199,11 @@ export default function NewEvaluationPage() {
 
   // Submit transcript and start chat
   const handleTranscriptSubmit = async () => {
-    if (!transcript.trim()) return;
+    const transcriptError = getInitialTranscriptError(transcript);
+    if (transcriptError) {
+      setChatError(transcriptError);
+      return;
+    }
 
     // Create evaluation in database
     setChatError(null);
@@ -225,7 +230,7 @@ export default function NewEvaluationPage() {
     setCurrentStep('chat');
 
     // Send transcript as first message
-    await sendMessage(`Here is my evaluation transcript:\n\n${transcript}`, id);
+    await sendMessage(buildInitialTranscriptMessage(transcript), id);
   };
 
   // Handle chat form submit

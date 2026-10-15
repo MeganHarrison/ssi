@@ -3,6 +3,20 @@ export const MAX_CHAT_HISTORY_MESSAGES = 40;
 export const MAX_CHAT_HISTORY_CHARS = 60_000;
 export const MAX_CHAT_REQUEST_BYTES = 100 * 1024;
 export const MAX_PDF_REQUEST_BYTES = 2 * 1024;
+export const INITIAL_TRANSCRIPT_PREFIX = 'Here is my evaluation transcript:\n\n';
+
+export function buildInitialTranscriptMessage(transcript) {
+  return `${INITIAL_TRANSCRIPT_PREFIX}${transcript}`;
+}
+
+export function getInitialTranscriptError(transcript) {
+  if (typeof transcript !== 'string' || !transcript.trim()) return 'Enter a transcript before continuing.';
+  const messageLength = buildInitialTranscriptMessage(transcript).length;
+  if (messageLength > MAX_CHAT_MESSAGE_CHARS) {
+    return `This transcript is too long to send in one message. Shorten it to ${MAX_CHAT_MESSAGE_CHARS - INITIAL_TRANSCRIPT_PREFIX.length} characters or fewer. No evaluation has been created.`;
+  }
+  return null;
+}
 
 const UUID_PATTERN = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
 

@@ -6,6 +6,9 @@ import {
   MAX_CHAT_HISTORY_MESSAGES,
   MAX_CHAT_MESSAGE_CHARS,
   MAX_CHAT_REQUEST_BYTES,
+  INITIAL_TRANSCRIPT_PREFIX,
+  buildInitialTranscriptMessage,
+  getInitialTranscriptError,
   RequestBodyError,
   loadEvaluationChatHistory,
   parseChatRequest,
@@ -38,6 +41,14 @@ test('chat and PDF payloads accept only bounded identifiers and text, never clie
   assert.throws(() => parseChatRequest({ evaluationId: 'not-a-uuid', messageId, message: 'Hi' }), RequestBodyError);
   assert.throws(() => parseChatRequest({ evaluationId, messageId, message: '' }), RequestBodyError);
   assert.throws(() => parseChatRequest({ evaluationId, messageId, message: 'x'.repeat(MAX_CHAT_MESSAGE_CHARS + 1) }), error => error.status === 413);
+});
+
+test('initial transcripts are checked against the exact message limit before evaluation creation', () => {
+  const maxTranscriptLength = MAX_CHAT_MESSAGE_CHARS - INITIAL_TRANSCRIPT_PREFIX.length;
+  assert.equal(getInitialTranscriptError('   '), 'Enter a transcript before continuing.');
+  assert.equal(getInitialTranscriptError('x'.repeat(maxTranscriptLength)), null);
+  assert.match(getInitialTranscriptError('x'.repeat(maxTranscriptLength + 1)), /No evaluation has been created/);
+  assert.equal(buildInitialTranscriptMessage('transcript'), `${INITIAL_TRANSCRIPT_PREFIX}transcript`);
 });
 
 test('JSON body reading enforces actual stream size and gives structured client errors', async () => {

@@ -5,6 +5,14 @@ const SCALE_FIELDS = [
   ['writtenExpression', 'WE'],
 ];
 
+const COMPOSITE_FIELDS = [
+  ['oralLanguage', 'OL'],
+  ['writtenLanguage', 'WL'],
+  ['receptiveLanguage', 'RL'],
+  ['expressiveLanguage', 'EL'],
+  ['overallLanguage', 'Overall'],
+];
+
 /**
  * @param {string} label
  * @param {{ rawScore?: number | null, standardScore?: number | null, percentileRank?: number | null } | null | undefined} scores
@@ -23,14 +31,16 @@ export function formatScaleScore(label, scores) {
  * @param {Record<string, { rawScore?: number | null, standardScore?: number | null, percentileRank?: number | null } | null | undefined> | null | undefined} scores
  * @returns {Record<string, number>}
  */
-export function scoreTemplateFields(scores) {
+export function scoreTemplateFields(scores, composites) {
   const fields = {};
-  for (const [scale, prefix] of SCALE_FIELDS) {
-    const value = scores?.[scale];
-    if (!value) continue;
-    for (const [property, suffix] of [['rawScore', 'RawScore'], ['standardScore', 'StandardScore'], ['percentileRank', 'Percentile']]) {
-      const score = value[property];
-      if (score != null) fields[`${prefix}_${suffix}`] = score;
+  for (const [source, entries] of [[scores, SCALE_FIELDS], [composites, COMPOSITE_FIELDS]]) {
+    for (const [scale, prefix] of entries) {
+      const value = source?.[scale];
+      if (!value) continue;
+      for (const [property, suffix] of [['rawScore', 'RawScore'], ['standardScore', 'StandardScore'], ['percentileRank', 'Percentile']]) {
+        const score = value[property];
+        if (score != null) fields[`${prefix}_${suffix}`] = score;
+      }
     }
   }
   return fields;

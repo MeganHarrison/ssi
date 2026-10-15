@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PDFDocument } from 'pdf-lib';
 
-import { drawUnicodeText, embedUnicodeFonts, UnsupportedPdfCharacterError } from './unicode-fonts.mjs';
+import { drawUnicodeText, embedUnicodeFonts, fontForUnicodeText, UnsupportedPdfCharacterError } from './unicode-fonts.mjs';
 
 test('fallback reports embed Unicode font subsets and draw Latin, Chinese, and Arabic text', async () => {
   const pdfDoc = await PDFDocument.create();
@@ -28,4 +28,22 @@ test('unsupported characters fail with a specific code point', async () => {
     () => drawUnicodeText(page, '\uE000', { x: 50, y: 700, size: 12 }, fonts),
     error => error instanceof UnsupportedPdfCharacterError && /U\+E000/.test(error.message),
   );
+});
+
+test('actual template text fields regenerate appearances with a compatible Unicode font', async () => {
+  const pdfDoc = await PDFDocument.create();
+  const fonts = await embedUnicodeFonts(pdfDoc);
+  const page = pdfDoc.addPage([612, 792]);
+  const form = pdfDoc.getForm();
+  const chinese = form.createTextField('ClientName');
+  const arabic = form.createTextField('School');
+  chinese.addToPage(page, { x: 50, y: 700, width: 240, height: 24 });
+  arabic.addToPage(page, { x: 50, y: 650, width: 240, height: 24 });
+
+  for (const [field, value] of [[chinese, '李明'], [arabic, 'سارة']]) {
+    field.setText(value);
+    field.updateAppearances(fontForUnicodeText(value, fonts));
+  }
+
+  assert.ok((await pdfDoc.save()).byteLength > 0);
 });

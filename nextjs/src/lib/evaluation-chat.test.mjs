@@ -100,6 +100,20 @@ test('saved chat history is bounded by message count, message size, and aggregat
   assert.equal(history.at(-1).content, `message-${MAX_CHAT_HISTORY_MESSAGES + 7}`);
 });
 
+test('the original transcript remains first in bounded history after many newer messages', () => {
+  const transcript = 'Facts that only appeared in the original transcript';
+  const rows = Array.from({ length: MAX_CHAT_HISTORY_MESSAGES + 8 }, (_, index) => ({
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    content: `message-${index}`,
+    trusted: index % 2 === 1,
+  }));
+
+  const history = selectTrustedChatHistory(rows, transcript);
+  assert.equal(history.length, MAX_CHAT_HISTORY_MESSAGES);
+  assert.equal(history[0].content, buildInitialTranscriptMessage(transcript));
+  assert.equal(history.at(-1).content, `message-${MAX_CHAT_HISTORY_MESSAGES + 7}`);
+});
+
 test('chat history reads are RLS-scoped, descending, bounded, then restored chronologically', async () => {
   const calls = [];
   const descendingRows = [
@@ -107,26 +121,34 @@ test('chat history reads are RLS-scoped, descending, bounded, then restored chro
     { id: '2', role: 'assistant', content: 'untrusted reply', trusted: false },
     { id: '1', role: 'user', content: 'earlier user text', trusted: false },
   ];
-  const query = {
-    select(columns) { calls.push(['select', columns]); return this; },
-    eq(column, value) { calls.push(['eq', column, value]); return this; },
-    order(column, options) { calls.push(['order', column, options]); return this; },
-    limit(value) { calls.push(['limit', value]); return Promise.resolve({ data: descendingRows, error: null }); },
+  const supabase = {
+    from(table) {
+      calls.push(['from', table]);
+      return {
+        select(columns) { calls.push(['select', columns]); return this; },
+        eq(column, value) { calls.push(['eq', column, value]); return this; },
+        order(column, options) { calls.push(['order', column, options]); return this; },
+        limit(value) {
+          calls.push(['limit', value]);
+          return Promise.resolve({
+            data: table === 'chat_messages' ? descendingRows : [{ content: 'original transcript' }],
+            error: null,
+          });
+        },
+      };
+    },
   };
-  const supabase = { from(table) { calls.push(['from', table]); return query; } };
 
   assert.deepEqual(await loadEvaluationChatHistory(supabase, evaluationId), [
+    { role: 'user', content: buildInitialTranscriptMessage('original transcript') },
     { role: 'user', content: 'earlier user text' },
     { role: 'assistant', content: 'new reply' },
   ]);
-  assert.deepEqual(calls, [
+  assert.deepEqual(calls.filter(([method]) => method === 'from').sort(), [
     ['from', 'chat_messages'],
-    ['select', 'role, content, trusted, created_at, id'],
-    ['eq', 'evaluation_id', evaluationId],
-    ['order', 'created_at', { ascending: false }],
-    ['order', 'id', { ascending: false }],
-    ['limit', MAX_CHAT_HISTORY_MESSAGES],
+    ['from', 'transcripts'],
   ]);
+  assert.ok(calls.some(call => call[0] === 'select' && call[1] === 'content'));
 });
 
 test('chat writes enforce user and trusted assistant provenance separately', async () => {

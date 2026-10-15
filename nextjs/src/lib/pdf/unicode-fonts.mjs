@@ -24,6 +24,17 @@ export async function embedUnicodeFonts(pdfDoc) {
   }));
 }
 
+/** @param {string} value @param {import('pdf-lib').PDFFont[]} fonts */
+export function fontForUnicodeText(value, fonts) {
+  const codePoints = [...value].map(character => character.codePointAt(0));
+  const font = fonts.find(candidate => codePoints.every(codePoint => candidate.getCharacterSet().includes(codePoint)));
+  if (!font) {
+    const unsupported = codePoints.find(codePoint => !fonts.some(candidate => candidate.getCharacterSet().includes(codePoint)));
+    throw new UnsupportedPdfCharacterError(unsupported ?? codePoints[0] ?? 0);
+  }
+  return font;
+}
+
 /**
  * @param {import('pdf-lib').PDFPage} page
  * @param {string} value

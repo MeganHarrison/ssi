@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument } from 'pdf-lib';
-import { drawUnicodeText, embedUnicodeFonts, UnsupportedPdfCharacterError } from '@/lib/pdf/unicode-fonts.mjs';
+import { embedUnicodeFonts, fontForUnicodeText, UnsupportedPdfCharacterError } from '@/lib/pdf/unicode-fonts.mjs';
 import { createSSRSassClient } from '@/lib/supabase/server';
 import OpenAI from 'openai';
-import { resolveEvaluationFormData, storedEvaluationFormData } from '@/lib/evaluation-form-data.mjs';
-import { formatScaleScore, scoreTemplateFields } from '@/lib/score-export.mjs';
+import {
+  EvaluationExtractionValidationError,
+  parseEvaluationExtraction,
+  resolveEvaluationFormData,
+  storedEvaluationFormData,
+} from '@/lib/evaluation-form-data.mjs';
+import { renderFallbackEvaluationReport } from '@/lib/evaluation-report.mjs';
+import { scoreTemplateFields } from '@/lib/score-export.mjs';
 import { getVerifiedSupabaseUser } from '@/lib/supabase/verified-user.mjs';
 import {
   MAX_PDF_REQUEST_BYTES,
@@ -77,12 +83,13 @@ Only include fields that have actual values mentioned in the conversation.`,
     response_format: { type: 'json_object' },
   });
 
+  let parsed: unknown;
   try {
-    return JSON.parse(response.choices[0].message.content || '{}');
+    parsed = JSON.parse(response.choices[0].message.content || '{}');
   } catch {
-    console.error('Failed to parse extraction response');
-    return {};
+    throw new EvaluationExtractionValidationError();
   }
+  return parseEvaluationExtraction(parsed);
 }
 
 export async function POST(req: NextRequest) {
@@ -137,7 +144,15 @@ export async function POST(req: NextRequest) {
 
     // Do not let an empty AI extraction erase a saved evaluation when the user
     // downloads its PDF without adding any new chat messages.
-    const extractedFormData = messages.length > 0 ? await extractFormData(messages) : {};
+    let extractedFormData = {};
+    try {
+      extractedFormData = messages.length > 0 ? await extractFormData(messages) : {};
+    } catch (error) {
+      if (error instanceof EvaluationExtractionValidationError) {
+        return NextResponse.json({ error: 'The extracted evaluation data was invalid. Review the transcript and try again.' }, { status: 502 });
+      }
+      throw error;
+    }
     const resolved = resolveEvaluationFormData(savedFormData, extractedFormData);
     if (!resolved.formData) {
       return NextResponse.json({ error: 'No evaluation data is available to generate a PDF' }, { status: 422 });
@@ -178,160 +193,27 @@ export async function POST(req: NextRequest) {
     }
 
     if (!usedTemplate) {
-      const unicodeFonts = await embedUnicodeFonts(pdfDoc);
-      // Create a simple report PDF with extracted data
-      const page = pdfDoc.addPage([612, 792]); // Letter size
-      const { height } = page.getSize();
-
-      let yPosition = height - 50;
-      const lineHeight = 20;
-
-      // Title
-      page.drawText('OWLS II Evaluation Report', {
-        x: 50,
-        y: yPosition,
-        size: 18,
-      });
-      yPosition -= lineHeight * 2;
-
-      // Helper function to add a line
-      const addLine = (label: string, value: string | number | null | undefined) => {
-        if (value !== null && value !== undefined) {
-          drawUnicodeText(page, `${label}: ${value}`, { x: 50, y: yPosition, size: 12 }, unicodeFonts);
-          yPosition -= lineHeight;
-        }
-      };
-
-      // Client Information
-      page.drawText('Client Information', { x: 50, y: yPosition, size: 14 });
-      yPosition -= lineHeight;
-
-      addLine('Name', formData.client?.name);
-      addLine('Date of Birth', formData.client?.dateOfBirth);
-      addLine('Age', formData.client?.ageYears && formData.client?.ageMonths
-        ? `${formData.client.ageYears} years, ${formData.client.ageMonths} months`
-        : formData.client?.ageYears);
-      addLine('Gender', formData.client?.gender);
-      addLine('Grade', formData.client?.grade);
-      addLine('School', formData.client?.school);
-
-      yPosition -= lineHeight;
-
-      // Examiner Information
-      page.drawText('Examiner Information', { x: 50, y: yPosition, size: 14 });
-      yPosition -= lineHeight;
-
-      addLine('Examiner', formData.examiner?.name);
-      addLine('Title', formData.examiner?.title);
-      addLine('Test Date', formData.testDate);
-
-      yPosition -= lineHeight;
-
-      // Scores
-      if (formData.scores) {
-        page.drawText('Scores', { x: 50, y: yPosition, size: 14 });
-        yPosition -= lineHeight;
-
-        const addScores = (label: string, scores: { rawScore?: number; standardScore?: number; percentileRank?: number } | undefined) => {
-          const scoreText = formatScaleScore(label, scores);
-          if (scoreText) {
-            drawUnicodeText(page, scoreText, { x: 50, y: yPosition, size: 12 }, unicodeFonts);
-            yPosition -= lineHeight;
-          }
-        };
-
-        addScores('Listening Comprehension', formData.scores.listeningComprehension);
-        addScores('Oral Expression', formData.scores.oralExpression);
-        addScores('Reading Comprehension', formData.scores.readingComprehension);
-        addScores('Written Expression', formData.scores.writtenExpression);
-      }
-
-      if (formData.composites) {
-        page.drawText('Composite Scores', { x: 50, y: yPosition, size: 14 });
-        yPosition -= lineHeight;
-
-        const addComposite = (label: string, scores: { standardScore?: number; percentileRank?: number } | undefined) => {
-          const scoreText = formatScaleScore(label, scores);
-          if (scoreText) {
-            drawUnicodeText(page, scoreText, { x: 50, y: yPosition, size: 12 }, unicodeFonts);
-            yPosition -= lineHeight;
-          }
-        };
-
-        addComposite('Oral Language Composite', formData.composites.oralLanguage);
-        addComposite('Written Language Composite', formData.composites.writtenLanguage);
-        addComposite('Receptive Language Composite', formData.composites.receptiveLanguage);
-        addComposite('Expressive Language Composite', formData.composites.expressiveLanguage);
-        addComposite('Overall Language Composite', formData.composites.overallLanguage);
-      }
-
-      yPosition -= lineHeight;
-
-      // Notes
-      if (formData.notes) {
-        page.drawText('Notes', { x: 50, y: yPosition, size: 14 });
-        yPosition -= lineHeight;
-
-        // Wrap long text
-        const words = formData.notes.split(' ');
-        let line = '';
-        for (const word of words) {
-          if (line.length + word.length > 80) {
-            drawUnicodeText(page, line, { x: 50, y: yPosition, size: 10 }, unicodeFonts);
-            yPosition -= lineHeight * 0.8;
-            line = word + ' ';
-          } else {
-            line += word + ' ';
-          }
-        }
-        if (line) {
-          drawUnicodeText(page, line, { x: 50, y: yPosition, size: 10 }, unicodeFonts);
-          yPosition -= lineHeight;
-        }
-      }
-
-      // Recommendations
-      if (formData.recommendations) {
-        yPosition -= lineHeight;
-        page.drawText('Recommendations', { x: 50, y: yPosition, size: 14 });
-        yPosition -= lineHeight;
-
-        const words = formData.recommendations.split(' ');
-        let line = '';
-        for (const word of words) {
-          if (line.length + word.length > 80) {
-            drawUnicodeText(page, line, { x: 50, y: yPosition, size: 10 }, unicodeFonts);
-            yPosition -= lineHeight * 0.8;
-            line = word + ' ';
-          } else {
-            line += word + ' ';
-          }
-        }
-        if (line) {
-          drawUnicodeText(page, line, { x: 50, y: yPosition, size: 10 }, unicodeFonts);
-        }
-      }
-
-      // Footer note
-      page.drawText(
-        'Note: This is a generated report. Please upload the official OWLS II PDF template for form filling.',
-        { x: 50, y: 50, size: 8 }
-      );
+      await renderFallbackEvaluationReport(pdfDoc, formData);
     } else {
       // Fill the actual PDF form fields
       const form = pdfDoc.getForm();
+      const unicodeFonts = await embedUnicodeFonts(pdfDoc);
 
       // Map extracted data to form fields
       // This will need to be updated based on actual PDF field names
-      try {
+      {
         const setField = (fieldName: string, value: string | number | null | undefined) => {
           if (value !== null && value !== undefined) {
+            let field;
             try {
-              const field = form.getTextField(fieldName);
-              field.setText(String(value));
+              field = form.getTextField(fieldName);
             } catch {
               // Field not found, skip
+              return;
             }
+            const text = String(value);
+            field.setText(text);
+            field.updateAppearances(fontForUnicodeText(text, unicodeFonts));
           }
         };
 
@@ -353,8 +235,6 @@ export async function POST(req: NextRequest) {
 
         setField('Notes', formData.notes);
         setField('Recommendations', formData.recommendations);
-      } catch (error) {
-        console.error('Error filling form fields:', error);
       }
     }
 

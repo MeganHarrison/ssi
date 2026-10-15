@@ -6,6 +6,8 @@ import {
   formatEvaluationDate,
   mergeManualEvaluationEdits,
   mergeEvaluationFormData,
+  EvaluationExtractionValidationError,
+  parseEvaluationExtraction,
   resolveEvaluationFormData,
   storedEvaluationFormData,
 } from './evaluation-form-data.mjs';
@@ -177,4 +179,27 @@ test('date-only values keep their calendar day in negative UTC offsets', () => {
     timeZone: 'America/Los_Angeles', year: 'numeric', month: 'long', day: 'numeric',
   }), 'January 15, 2026');
   assert.equal(formatEvaluationDate(null), 'Not set');
+});
+
+test('extracted form values are validated before rendering or persistence', () => {
+  assert.deepEqual(parseEvaluationExtraction({
+    client: { name: 'Megan', dateOfBirth: '2012-03-04', ageYears: 14, ageMonths: 0 },
+    testDate: '2026-10-15',
+    scores: { listeningComprehension: { rawScore: 0, standardScore: 100, percentileRank: 50 } },
+    notes: 'Reviewed',
+  }), {
+    client: { name: 'Megan', dateOfBirth: '2012-03-04', ageYears: 14, ageMonths: 0 },
+    testDate: '2026-10-15',
+    scores: { listeningComprehension: { rawScore: 0, standardScore: 100, percentileRank: 50 } },
+    notes: 'Reviewed',
+  });
+
+  for (const invalid of [
+    { notes: ['not', 'text'] },
+    { client: { dateOfBirth: '2026-02-30' } },
+    { scores: { oralExpression: { percentileRank: 101 } } },
+    { composites: { overallLanguage: { standardScore: 200 } } },
+  ]) {
+    assert.throws(() => parseEvaluationExtraction(invalid), EvaluationExtractionValidationError);
+  }
 });

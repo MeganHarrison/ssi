@@ -112,7 +112,7 @@ export function parsePdfRequest(payload) {
  * @param {unknown[]} rows
  * @returns {{role: 'user' | 'assistant', content: string}[]}
  */
-export function selectTrustedChatHistory(rows) {
+export function selectTrustedChatHistory(rows, initialTranscript = null) {
   if (!Array.isArray(rows)) return [];
 
   const eligible = rows.filter(row => isRecord(row)
@@ -121,15 +121,22 @@ export function selectTrustedChatHistory(rows) {
     && row.content.length > 0
     && row.content.length <= MAX_CHAT_MESSAGE_CHARS);
 
+  const transcriptMessage = typeof initialTranscript === 'string' && initialTranscript.trim()
+    ? { role: 'user', content: buildInitialTranscriptMessage(initialTranscript) }
+    : null;
+  const recentRows = transcriptMessage
+    ? eligible.filter(row => row.content !== transcriptMessage.content)
+    : eligible;
   const selected = [];
-  let totalChars = 0;
-  for (let index = eligible.length - 1; index >= 0 && selected.length < MAX_CHAT_HISTORY_MESSAGES; index -= 1) {
-    const { role, content } = eligible[index];
+  let totalChars = transcriptMessage?.content.length ?? 0;
+  const availableMessages = MAX_CHAT_HISTORY_MESSAGES - (transcriptMessage ? 1 : 0);
+  for (let index = recentRows.length - 1; index >= 0 && selected.length < availableMessages; index -= 1) {
+    const { role, content } = recentRows[index];
     if (totalChars + content.length > MAX_CHAT_HISTORY_CHARS) break;
     selected.push({ role, content });
     totalChars += content.length;
   }
-  return selected.reverse();
+  return [...(transcriptMessage ? [transcriptMessage] : []), ...selected.reverse()];
 }
 
 /**
@@ -139,16 +146,25 @@ export function selectTrustedChatHistory(rows) {
  * @returns {Promise<{role: 'user' | 'assistant', content: string}[]>}
  */
 export async function loadEvaluationChatHistory(supabase, evaluationId) {
-  const { data, error } = await supabase
+  const [{ data, error }, { data: transcriptRows, error: transcriptError }] = await Promise.all([
+    supabase
     .from('chat_messages')
     .select('role, content, trusted, created_at, id')
     .eq('evaluation_id', evaluationId)
     .order('created_at', { ascending: false })
     .order('id', { ascending: false })
-    .limit(MAX_CHAT_HISTORY_MESSAGES);
+    .limit(MAX_CHAT_HISTORY_MESSAGES),
+    supabase
+      .from('transcripts')
+      .select('content')
+      .eq('evaluation_id', evaluationId)
+      .order('created_at', { ascending: true })
+      .limit(1),
+  ]);
 
   if (error) throw new Error('Could not load the saved conversation', { cause: error });
-  return selectTrustedChatHistory((data ?? []).slice().reverse());
+  if (transcriptError) throw new Error('Could not load the saved evaluation transcript', { cause: transcriptError });
+  return selectTrustedChatHistory((data ?? []).slice().reverse(), transcriptRows?.[0]?.content ?? null);
 }
 
 /**

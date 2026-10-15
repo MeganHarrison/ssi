@@ -1,3 +1,72 @@
+import { z } from 'zod';
+
+const nullableText = z.string().nullable().optional();
+const nullableDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine(value => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  })
+  .nullable()
+  .optional();
+const nullableAgeYears = z.number().int().min(0).max(120).nullable().optional();
+const nullableAgeMonths = z.number().int().min(0).max(11).nullable().optional();
+const nullableRawScore = z.number().finite().min(0).nullable().optional();
+const nullableStandardScore = z.number().finite().min(40).max(160).nullable().optional();
+const nullablePercentileRank = z.number().finite().min(0).max(100).nullable().optional();
+
+const scaleScoreSchema = z.object({
+  rawScore: nullableRawScore,
+  standardScore: nullableStandardScore,
+  percentileRank: nullablePercentileRank,
+}).passthrough().optional().nullable();
+
+const evaluationExtractionSchema = z.object({
+  client: z.object({
+    name: nullableText,
+    dateOfBirth: nullableDate,
+    ageYears: nullableAgeYears,
+    ageMonths: nullableAgeMonths,
+    gender: nullableText,
+    grade: nullableText,
+    school: nullableText,
+  }).passthrough().optional().nullable(),
+  examiner: z.object({
+    name: nullableText,
+    title: nullableText,
+  }).passthrough().optional().nullable(),
+  testDate: nullableDate,
+  scores: z.object({
+    listeningComprehension: scaleScoreSchema,
+    oralExpression: scaleScoreSchema,
+    readingComprehension: scaleScoreSchema,
+    writtenExpression: scaleScoreSchema,
+  }).passthrough().optional().nullable(),
+  composites: z.object({
+    oralLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+    writtenLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+    receptiveLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+    expressiveLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+    overallLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+  }).passthrough().optional().nullable(),
+  notes: nullableText,
+  recommendations: nullableText,
+}).passthrough();
+
+export class EvaluationExtractionValidationError extends Error {
+  constructor() {
+    super('The extracted evaluation data did not match the expected fields.');
+    this.name = 'EvaluationExtractionValidationError';
+  }
+}
+
+/** Validate model output before it reaches the renderer or database. */
+export function parseEvaluationExtraction(value) {
+  const result = evaluationExtractionSchema.safeParse(value);
+  if (!result.success) throw new EvaluationExtractionValidationError();
+  return result.data;
+}
+
 /**
  * @param {unknown} value
  * @returns {boolean}

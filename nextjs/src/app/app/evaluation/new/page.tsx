@@ -149,12 +149,9 @@ export default function NewEvaluationPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          messages: [...messages, userMessage].map(m => ({
-            role: m.role,
-            content: m.content,
-          })),
           evaluationId: targetEvaluationId,
           messageId: userMessage.id,
+          message: content,
         }),
       });
 
@@ -246,7 +243,6 @@ export default function NewEvaluationPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           evaluationId,
-          messages: messages.map(m => ({ role: m.role, content: m.content })),
         }),
       });
 

@@ -5,6 +5,13 @@ import OpenAI from 'openai';
 import { resolveEvaluationFormData, storedEvaluationFormData } from '@/lib/evaluation-form-data.mjs';
 import { formatScaleScore, scoreTemplateFields } from '@/lib/score-export.mjs';
 import { getVerifiedSupabaseUser } from '@/lib/supabase/verified-user.mjs';
+import {
+  MAX_PDF_REQUEST_BYTES,
+  RequestBodyError,
+  loadEvaluationChatHistory,
+  parsePdfRequest,
+  readJsonRequestBody,
+} from '@/lib/evaluation-chat.mjs';
 
 // Extract structured data from chat messages using AI
 async function extractFormData(messages: { role: string; content: string }[]) {
@@ -72,45 +79,57 @@ Only include fields that have actual values mentioned in the conversation.`,
 
 export async function POST(req: NextRequest) {
   try {
-    const { evaluationId, messages } = await req.json();
-
-    if (!messages || !Array.isArray(messages)) {
-      return NextResponse.json({ error: 'Messages required' }, { status: 400 });
-    }
-    if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json(
-        { error: 'PDF extraction is unavailable because OPENAI_API_KEY is not configured on this deployment.' },
-        { status: 503 }
-      );
-    }
-
     const client = await createSSRSassClient();
     const supabase = client.getSupabaseClient();
     if (!await getVerifiedSupabaseUser(supabase)) {
       return NextResponse.json({ error: 'Authentication required' }, { status: 401 });
     }
 
-    let savedFormData: Record<string, unknown> | null = null;
-    if (evaluationId) {
-      const { data, error } = await supabase
-        .from('evaluations')
-        .select('id, form_data, client_name, client_dob, client_age_years, client_age_months, client_gender, client_grade, client_school, examiner_name, examiner_title, test_date, listening_comprehension, oral_expression, reading_comprehension, written_expression, composite_scores, notes, recommendations')
-        .eq('id', evaluationId)
-        .maybeSingle();
+    let input;
+    try {
+      input = parsePdfRequest(await readJsonRequestBody(req, MAX_PDF_REQUEST_BYTES));
+    } catch (error) {
+      if (error instanceof RequestBodyError) {
+        return NextResponse.json({ error: error.message }, { status: error.status });
+      }
+      throw error;
+    }
+    const { evaluationId } = input;
 
-      if (error) {
-        console.error('Error loading evaluation for PDF generation:', error);
-        return NextResponse.json({ error: 'Could not load evaluation data' }, { status: 500 });
-      }
-      if (!data) {
-        return NextResponse.json({ error: 'Evaluation not found' }, { status: 404 });
-      }
-      savedFormData = storedEvaluationFormData(data as unknown as Record<string, unknown>);
+    let savedFormData: Record<string, unknown> | null = null;
+    const { data, error } = await supabase
+      .from('evaluations')
+      .select('id, form_data, client_name, client_dob, client_age_years, client_age_months, client_gender, client_grade, client_school, examiner_name, examiner_title, test_date, listening_comprehension, oral_expression, reading_comprehension, written_expression, composite_scores, notes, recommendations')
+      .eq('id', evaluationId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error loading evaluation for PDF generation:', error);
+      return NextResponse.json({ error: 'Could not load evaluation data' }, { status: 500 });
+    }
+    if (!data) {
+      return NextResponse.json({ error: 'Evaluation not found or unavailable to your account.' }, { status: 404 });
+    }
+    savedFormData = storedEvaluationFormData(data as unknown as Record<string, unknown>);
+
+    let messages;
+    try {
+      messages = await loadEvaluationChatHistory(supabase, evaluationId);
+    } catch (historyError) {
+      console.error('Error loading evaluation chat for PDF generation:', historyError);
+      return NextResponse.json({ error: 'Could not load the saved evaluation conversation' }, { status: 500 });
+    }
+
+    if (messages.length > 0 && !process.env.OPENAI_API_KEY) {
+      return NextResponse.json(
+        { error: 'PDF extraction is unavailable because OPENAI_API_KEY is not configured on this deployment.' },
+        { status: 503 }
+      );
     }
 
     // Do not let an empty AI extraction erase a saved evaluation when the user
     // downloads its PDF without adding any new chat messages.
-    const extractedFormData = await extractFormData(messages);
+    const extractedFormData = messages.length > 0 ? await extractFormData(messages) : {};
     const resolved = resolveEvaluationFormData(savedFormData, extractedFormData);
     if (!resolved.formData) {
       return NextResponse.json({ error: 'No evaluation data is available to generate a PDF' }, { status: 422 });

@@ -2,8 +2,18 @@ import { openai } from '@ai-sdk/openai';
 import { streamText } from 'ai';
 import { SYSTEM_PROMPT } from '@/lib/ai/prompts';
 import { createSSRClient } from '@/lib/supabase/server';
+import { createServerAdminClient } from '@/lib/supabase/serverAdminClient';
 import { getVerifiedSupabaseUser } from '@/lib/supabase/verified-user.mjs';
-import { persistEvaluationChatMessage, verifyOwnedEvaluation } from '@/lib/evaluation-chat.mjs';
+import {
+  MAX_CHAT_REQUEST_BYTES,
+  RequestBodyError,
+  loadEvaluationChatHistory,
+  parseChatRequest,
+  persistEvaluationUserMessage,
+  persistTrustedEvaluationAssistantMessage,
+  readJsonRequestBody,
+  verifyOwnedEvaluation,
+} from '@/lib/evaluation-chat.mjs';
 
 export const runtime = 'edge';
 
@@ -14,16 +24,16 @@ export async function POST(req: Request) {
       return Response.json({ error: 'Authentication required' }, { status: 401 });
     }
 
-    const { evaluationId, messageId, messages } = await req.json();
-
-    // Validate messages
-    if (typeof evaluationId !== 'string' || typeof messageId !== 'string' || !Array.isArray(messages)) {
-      return Response.json({ error: 'An evaluation, message ID, and message history are required.' }, { status: 400 });
+    let input;
+    try {
+      input = parseChatRequest(await readJsonRequestBody(req, MAX_CHAT_REQUEST_BYTES));
+    } catch (error) {
+      if (error instanceof RequestBodyError) {
+        return Response.json({ error: error.message }, { status: error.status });
+      }
+      throw error;
     }
-    const latestMessage = messages.at(-1);
-    if (latestMessage?.role !== 'user' || typeof latestMessage.content !== 'string' || !latestMessage.content.trim()) {
-      return Response.json({ error: 'The latest chat message must contain user text.' }, { status: 400 });
-    }
+    const { evaluationId, messageId, message } = input;
 
     try {
       await verifyOwnedEvaluation(supabase, evaluationId);
@@ -33,15 +43,22 @@ export async function POST(req: Request) {
     }
 
     try {
-      await persistEvaluationChatMessage(supabase, {
+      await persistEvaluationUserMessage(supabase, {
         id: messageId,
         evaluationId,
-        role: 'user',
-        content: latestMessage.content,
+        content: message,
       });
     } catch (error) {
       console.error('Could not save user chat message:', error);
       return Response.json({ error: 'Your message was not saved. Retry before continuing.' }, { status: 500 });
+    }
+
+    let messages;
+    try {
+      messages = await loadEvaluationChatHistory(supabase, evaluationId);
+    } catch (error) {
+      console.error('Could not load saved evaluation chat history:', error);
+      return Response.json({ error: 'Your message was saved, but the conversation could not be loaded. Retry before continuing.' }, { status: 500 });
     }
 
     const assistantMessageId = crypto.randomUUID();
@@ -50,13 +67,14 @@ export async function POST(req: Request) {
     const result = streamText({
       model: openai('gpt-4o'),
       system: SYSTEM_PROMPT,
+      maxOutputTokens: 2_000,
       messages,
       onFinish: async ({ text }) => {
         try {
-          await persistEvaluationChatMessage(supabase, {
+          const serviceRoleSupabase = await createServerAdminClient();
+          await persistTrustedEvaluationAssistantMessage(serviceRoleSupabase, {
             id: assistantMessageId,
             evaluationId,
-            role: 'assistant',
             content: text,
           });
         } catch (error) {
@@ -69,6 +87,6 @@ export async function POST(req: Request) {
     return result.toTextStreamResponse({ headers: { 'X-Assistant-Message-Id': assistantMessageId } });
   } catch (error) {
     console.error('Chat API error:', error);
-    return new Response('Internal server error', { status: 500 });
+    return Response.json({ error: 'Chat service is unavailable. Please retry.' }, { status: 500 });
   }
 }

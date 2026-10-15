@@ -54,8 +54,9 @@ CREATE TABLE IF NOT EXISTS transcripts (
 CREATE TABLE IF NOT EXISTS chat_messages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   evaluation_id UUID REFERENCES evaluations(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+  role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
   content TEXT NOT NULL,
+  trusted BOOLEAN NOT NULL DEFAULT FALSE,
   extracted_data JSONB, -- Data extracted from this message
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -106,7 +107,12 @@ CREATE POLICY "Users can view chat messages of their evaluations"
 
 CREATE POLICY "Users can create chat messages for their evaluations"
   ON chat_messages FOR INSERT
-  WITH CHECK (evaluation_id IN (SELECT id FROM evaluations WHERE owner = auth.uid()));
+  WITH CHECK (
+    role = 'user'
+    AND trusted = FALSE
+    AND char_length(content) <= 24000
+    AND evaluation_id IN (SELECT id FROM evaluations WHERE owner = auth.uid())
+  );
 
 -- Grant permissions
 GRANT ALL ON evaluations TO authenticated;

@@ -150,6 +150,7 @@ export type Database = {
           evaluation_id: string
           role: string
           content: string
+          trusted: boolean
           extracted_data: Json | null
           created_at: string
         }
@@ -158,6 +159,7 @@ export type Database = {
           evaluation_id: string
           role: string
           content: string
+          trusted?: boolean
           extracted_data?: Json | null
           created_at?: string
         }
@@ -166,6 +168,7 @@ export type Database = {
           evaluation_id?: string
           role?: string
           content?: string
+          trusted?: boolean
           extracted_data?: Json | null
           created_at?: string
         }

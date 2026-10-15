@@ -1,0 +1,232 @@
+import { z } from 'zod';
+
+const nullableText = z.string().nullable().optional();
+const nullableDate = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine(value => {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  })
+  .nullable()
+  .optional();
+const nullableAgeYears = z.number().int().min(0).max(120).nullable().optional();
+const nullableAgeMonths = z.number().int().min(0).max(11).nullable().optional();
+const nullableRawScore = z.number().finite().min(0).nullable().optional();
+const nullableStandardScore = z.number().finite().min(40).max(160).nullable().optional();
+const nullablePercentileRank = z.number().finite().min(0).max(100).nullable().optional();
+
+const scaleScoreSchema = z.object({
+  rawScore: nullableRawScore,
+  standardScore: nullableStandardScore,
+  percentileRank: nullablePercentileRank,
+}).passthrough().optional().nullable();
+
+const evaluationExtractionSchema = z.object({
+  client: z.object({
+    name: nullableText,
+    dateOfBirth: nullableDate,
+    ageYears: nullableAgeYears,
+    ageMonths: nullableAgeMonths,
+    gender: nullableText,
+    grade: nullableText,
+    school: nullableText,
+  }).passthrough().optional().nullable(),
+  examiner: z.object({
+    name: nullableText,
+    title: nullableText,
+  }).passthrough().optional().nullable(),
+  testDate: nullableDate,
+  scores: z.object({
+    listeningComprehension: scaleScoreSchema,
+    oralExpression: scaleScoreSchema,
+    readingComprehension: scaleScoreSchema,
+    writtenExpression: scaleScoreSchema,
+  }).passthrough().optional().nullable(),
+  composites: z.object({
+    oralLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+    writtenLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+    receptiveLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+    expressiveLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+    overallLanguage: z.object({ standardScore: nullableStandardScore, percentileRank: nullablePercentileRank }).passthrough().optional().nullable(),
+  }).passthrough().optional().nullable(),
+  notes: nullableText,
+  recommendations: nullableText,
+}).passthrough();
+
+export class EvaluationExtractionValidationError extends Error {
+  constructor() {
+    super('The extracted evaluation data did not match the expected fields.');
+    this.name = 'EvaluationExtractionValidationError';
+  }
+}
+
+/** Validate model output before it reaches the renderer or database. */
+export function parseEvaluationExtraction(value) {
+  const result = evaluationExtractionSchema.safeParse(value);
+  if (!result.success) throw new EvaluationExtractionValidationError();
+  return result.data;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+export function hasMeaningfulFormData(value) {
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (typeof value === 'boolean') return true;
+  if (Array.isArray(value)) return value.some(hasMeaningfulFormData);
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(hasMeaningfulFormData);
+  }
+  return false;
+}
+
+/**
+ * Merge an AI extraction into saved evaluation data without letting null or
+ * blank extraction fields erase values already reviewed and stored.
+ *
+ * @param {unknown} saved
+ * @param {unknown} extracted
+ * @returns {Record<string, unknown>}
+ */
+export function mergeEvaluationFormData(saved, extracted) {
+  const savedObject = isRecord(saved) ? saved : {};
+  if (!isRecord(extracted)) return savedObject;
+
+  const merged = { ...savedObject };
+  for (const [key, value] of Object.entries(extracted)) {
+    if (isRecord(value)) {
+      const nested = mergeEvaluationFormData(savedObject[key], value);
+      if (hasMeaningfulFormData(nested)) merged[key] = nested;
+    } else if (hasMeaningfulFormData(value)) {
+      merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+/**
+ * @param {unknown} saved
+ * @param {unknown} extracted
+ * @returns {{ formData: Record<string, unknown> | null, shouldPersist: boolean }}
+ */
+export function resolveEvaluationFormData(saved, extracted) {
+  const hasNewData = hasMeaningfulFormData(extracted);
+  const formData = hasNewData
+    ? mergeExtractionPreservingManualOverrides(saved, extracted)
+    : isRecord(saved) ? saved : null;
+
+  return {
+    formData: formData && hasMeaningfulFormData(formData) ? formData : null,
+    shouldPersist: hasNewData,
+  };
+}
+
+const MANUAL_OVERRIDE_PATHS = ['client.name', 'client.dateOfBirth', 'examiner.name', 'testDate'];
+
+function mergeExtractionPreservingManualOverrides(saved, extracted) {
+  const merged = mergeEvaluationFormData(saved, extracted);
+  if (!isRecord(saved) || !Array.isArray(saved.manualOverrides)) return merged;
+
+  for (const path of saved.manualOverrides) {
+    if (!MANUAL_OVERRIDE_PATHS.includes(path)) continue;
+    const keys = path.split('.');
+    let source = saved;
+    let target = merged;
+    for (const key of keys.slice(0, -1)) {
+      if (!isRecord(source[key])) break;
+      source = source[key];
+      if (!isRecord(target[key])) target[key] = {};
+      target = target[key];
+    }
+    const lastKey = keys.at(-1);
+    if (Object.hasOwn(source, lastKey)) target[lastKey] = source[lastKey];
+  }
+  return merged;
+}
+
+/**
+ * @param {Record<string, unknown>} row
+ * @returns {Record<string, unknown> | null}
+ */
+export function storedEvaluationFormData(row) {
+  const fallback = {
+    client: {
+      name: row.client_name,
+      dateOfBirth: row.client_dob,
+      ageYears: row.client_age_years,
+      ageMonths: row.client_age_months,
+      gender: row.client_gender,
+      grade: row.client_grade,
+      school: row.client_school,
+    },
+    examiner: { name: row.examiner_name, title: row.examiner_title },
+    testDate: row.test_date,
+    scores: {
+      listeningComprehension: row.listening_comprehension,
+      oralExpression: row.oral_expression,
+      readingComprehension: row.reading_comprehension,
+      writtenExpression: row.written_expression,
+    },
+    composites: row.composite_scores,
+    notes: row.notes,
+    recommendations: row.recommendations,
+  };
+  const saved = isRecord(row.form_data)
+    ? mergeEvaluationFormData(fallback, row.form_data)
+    : fallback;
+  return hasMeaningfulFormData(saved) ? saved : null;
+}
+
+/**
+ * Apply the detail-page's manual corrections to both the legacy columns and
+ * the nested form_data shape used by PDF generation. Explicit nulls are kept
+ * so clearing a field does not reveal an older value on the next export.
+ *
+ * @param {unknown} saved
+ * @param {{ client_name?: string | null, client_dob?: string | null, examiner_name?: string | null, test_date?: string | null }} edits
+ * @returns {Record<string, unknown>}
+ */
+export function mergeManualEvaluationEdits(saved, edits) {
+  const form = isRecord(saved) ? saved : {};
+  const valueOrNull = (value) => typeof value === 'string' && value.trim() === '' ? null : value ?? null;
+  return {
+    ...form,
+    manualOverrides: [...new Set([
+      ...(Array.isArray(form.manualOverrides) ? form.manualOverrides : []),
+      ...MANUAL_OVERRIDE_PATHS,
+    ])],
+    client: {
+      ...(isRecord(form.client) ? form.client : {}),
+      name: valueOrNull(edits.client_name),
+      dateOfBirth: valueOrNull(edits.client_dob),
+    },
+    examiner: {
+      ...(isRecord(form.examiner) ? form.examiner : {}),
+      name: valueOrNull(edits.examiner_name),
+    },
+    testDate: valueOrNull(edits.test_date),
+  };
+}
+
+/**
+ * Format SQL DATE values in UTC so the calendar day is stable across browser
+ * time zones. Timestamp strings keep the browser's local-time formatting.
+ *
+ * @param {string | null | undefined} value
+ * @param {string} locale
+ * @param {Intl.DateTimeFormatOptions} options
+ * @returns {string}
+ */
+export function formatEvaluationDate(value, locale = 'en-US', options = {}) {
+  if (!value) return 'Not set';
+  const isDateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value);
+  const date = new Date(isDateOnly ? `${value}T00:00:00.000Z` : value);
+  return date.toLocaleDateString(locale, isDateOnly ? { ...options, timeZone: 'UTC' } : options);
+}
+
+/** @param {unknown} value */
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
